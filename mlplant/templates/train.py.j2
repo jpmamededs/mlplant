@@ -1,0 +1,13 @@
+# trainer.py: Model training extracted by mlplant
+{% if mlflow %}
+import mlflow
+import mlflow.sklearn
+
+mlflow.set_experiment("{{ title }}")
+
+with mlflow.start_run():
+{{ code | indent(4) }}
+    mlflow.log_params(locals())
+{% else %}
+{{ code }}
+{% endif %}

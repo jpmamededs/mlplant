@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mlplant"
+version = "0.1.0"
+description = "MLOps framework that converts exploratory Jupyter notebooks into production-ready API projects."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = [
+    "nbformat>=5.9",
+    "typer>=0.12",
+    "jinja2>=3.1",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov",
+]
+
+[project.scripts]
+mlplant = "mlplant.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["mlplant*"]
+
+[tool.setuptools.package-data]
+"mlplant.templates" = ["*.j2"]
