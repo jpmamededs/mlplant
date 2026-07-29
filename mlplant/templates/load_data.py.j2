@@ -1,3 +1,8 @@
-# data_loader.py: Data ingestion extracted by mlplant
+"""data_loader.py — Data ingestion."""
 
-{{ code }}
+import pandas as pd
+
+
+def load_data() -> pd.DataFrame:
+    """Load raw data and return as a DataFrame."""
+{{ code | indent(4, first=true) }}
