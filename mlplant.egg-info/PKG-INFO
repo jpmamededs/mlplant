@@ -13,7 +13,8 @@ Provides-Extra: dev
 Requires-Dist: pytest>=8.0; extra == "dev"
 Requires-Dist: pytest-cov; extra == "dev"
 
-# mlplant
+<img alt="mlplant" src="https://raw.githubusercontent.com/joaop/mlplant/main/assets/mlplant.svg" />
+
 
 mlplant is an MLOps framework that converts exploratory Jupyter notebooks into production-ready FastAPI projects using in-cell annotations.
 
@@ -27,49 +28,63 @@ pip install -e .
 
 ### 1. Annotate your notebook
 
-Add structured comments at the top of your code cells:
+Use Python decorators directly on functions inside your notebook cells:
 
 ```python
-# @mlplant.config
-LEARNING_RATE = 0.01
-N_ESTIMATORS = 100
+import mlplant
+
+@mlplant.config
+def _():
+    LEARNING_RATE = 0.01
+    N_ESTIMATORS = 100
 ```
 
 ```python
-# @mlplant.features
-X["new_feature"] = X["a"] / X["b"]
+@mlplant.features
+def _():
+    X["new_feature"] = X["a"] / X["b"]
 ```
 
 ```python
-# @mlplant.predict
+@mlplant.predict
 def predict(data: dict):
     return model.predict([list(data.values())])[0]
 ```
 
+> Cells with the same decorator are automatically merged into a single output file.
+> Visual noise (matplotlib, seaborn, print, display) is stripped automatically.
+
 ### 2. Build the project
 
 ```bash
+# as a direct command (after installation)
 mlplant build my_notebook.ipynb --output ./api --port 8080 --title "My API" --docker
+
+# or via python -m (works anywhere)
+python -m mlplant build my_notebook.ipynb --output ./api --docker
 ```
 
-### 3. Inspect detected annotations
+### 3. Inspect detected steps
 
 ```bash
 mlplant inspect my_notebook.ipynb
+
+# or
+python -m mlplant inspect my_notebook.ipynb
 ```
 
-## Supported annotations
+## Supported decorators
 
-| Annotation | Generated file |
-|---|---|
-| `# @mlplant.config` | `src/config.py` |
-| `# @mlplant.load_data` | `src/data_loader.py` |
-| `# @mlplant.preprocessing` | `src/preprocessing.py` |
-| `# @mlplant.features` | `src/features.py` |
-| `# @mlplant.train` | `src/trainer.py` |
-| `# @mlplant.evaluate` | `src/evaluate.py` |
-| `# @mlplant.artifacts` | `src/artifacts.py` |
-| `# @mlplant.predict` | `src/predict.py` |
+| Decorator | Generated file | Purpose |
+|---|---|---|
+| `@mlplant.config` | `src/config.py` | Hyperparameters and constants |
+| `@mlplant.load_data` | `src/data_loader.py` | Data ingestion |
+| `@mlplant.preprocessing` | `src/preprocessing.py` | Cleaning and null handling |
+| `@mlplant.features` | `src/features.py` | Feature engineering |
+| `@mlplant.train` | `src/trainer.py` | Model training |
+| `@mlplant.evaluate` | `src/evaluate.py` | Metrics and evaluation |
+| `@mlplant.artifacts` | `src/artifacts.py` | Model serialization |
+| `@mlplant.predict` | `src/predict.py` | Inference function (exposed at `/predict`) |
 
 ## Build flags
 

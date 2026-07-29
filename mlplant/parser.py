@@ -1,18 +1,29 @@
 """
-parser.py: Scans notebooks, identifies @mlplant.* annotations,
-merges duplicate step cells, and removes visual-noise lines.
+parser.py: Scans notebooks, identifies @mlplant.* decorators,
+merges duplicate step cells, extracts function bodies, and removes visual noise.
+
+Expected cell format:
+    import mlplant
+
+    @mlplant.features
+    def _():
+        X = df.drop(columns=['target'])
+        X['ratio'] = X['a'] / X['b']
+
+The decorator line and the `def` wrapper are stripped; only the body is kept.
 """
 
 from __future__ import annotations
 
 import re
+import textwrap
 from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List
 
 import nbformat
 
-# Annotations recognized by the framework, in pipeline order.
+# Pipeline steps recognized by the framework, in order.
 PIPELINE_ANNOTATIONS = [
     "config",
     "load_data",
@@ -24,10 +35,10 @@ PIPELINE_ANNOTATIONS = [
     "predict",
 ]
 
-# Regex pattern to capture: # @mlplant.<step>
-ANNOTATION_PATTERN = re.compile(r"#\s*@mlplant\.(\w+)")
+# Matches a real decorator line: @mlplant.<step>
+ANNOTATION_PATTERN = re.compile(r"^@mlplant\.(\w+)\s*$", re.MULTILINE)
 
-# Visual-only code patterns ignored during extraction.
+# Visual-only code patterns stripped during extraction.
 NOISE_PATTERNS = [
     re.compile(r"^\s*(import\s+(matplotlib|seaborn|plotly)|from\s+(matplotlib|seaborn|plotly))"),
     re.compile(r"^\s*(plt\.|sns\.|fig\s*=|ax\s*=|plt\.show|plt\.savefig)"),
@@ -41,23 +52,53 @@ def is_noise_line(line: str) -> bool:
 
 
 def clean_code(code: str) -> str:
-    cleaned_lines = [line for line in code.splitlines() if not is_noise_line(line)]
-    return "\n".join(cleaned_lines).strip()
+    cleaned = [line for line in code.splitlines() if not is_noise_line(line)]
+    return "\n".join(cleaned).strip()
 
 
 def detect_annotation(code: str) -> str | None:
-    for line in code.splitlines():
-        match = ANNOTATION_PATTERN.search(line)
-        if match:
-            step = match.group(1)
-            if step in PIPELINE_ANNOTATIONS:
-                return step
+    """Return the pipeline step name if the cell contains an @mlplant.<step> decorator."""
+    match = ANNOTATION_PATTERN.search(code)
+    if match:
+        step = match.group(1)
+        if step in PIPELINE_ANNOTATIONS:
+            return step
     return None
 
 
-def remove_annotation_line(code: str) -> str:
-    lines = [line for line in code.splitlines() if not ANNOTATION_PATTERN.search(line)]
-    return "\n".join(lines).strip()
+def extract_body(code: str) -> str:
+    """
+    Given a cell with an @mlplant.<step> decorator on a function,
+    return the function body dedented to column 0.
+
+    Falls back to the full cell (minus the decorator line) when no
+    wrapping function is found — this keeps backward compatibility.
+    """
+    lines = code.splitlines()
+
+    # Remove the decorator line(s)
+    body_start = None
+    stripped_lines = []
+    for i, line in enumerate(lines):
+        if ANNOTATION_PATTERN.match(line.strip()):
+            continue  # skip decorator
+        stripped_lines.append((i, line))
+
+    # Find the first def/async def and extract its body
+    def_index = None
+    for idx, (_, line) in enumerate(stripped_lines):
+        if re.match(r"\s*(async\s+)?def\s+", line):
+            def_index = idx
+            break
+
+    if def_index is not None:
+        body_lines = [line for _, line in stripped_lines[def_index + 1:]]
+        dedented = textwrap.dedent("\n".join(body_lines)).strip()
+        return dedented
+
+    # Fallback: no wrapper function — return code without the decorator line
+    fallback = "\n".join(line for _, line in stripped_lines).strip()
+    return fallback
 
 
 class ParseResult:
@@ -92,10 +133,10 @@ def parse_notebook(notebook_path: str | Path) -> ParseResult:
         if step is None:
             continue
 
-        code_without_annotation = remove_annotation_line(source_code)
-        cleaned_code = clean_code(code_without_annotation)
-        if cleaned_code:
-            step_blocks[step].append(cleaned_code)
+        body = extract_body(source_code)
+        cleaned = clean_code(body)
+        if cleaned:
+            step_blocks[step].append(cleaned)
 
     consolidated_blocks: Dict[str, str] = {
         step: "\n\n".join(fragments) for step, fragments in step_blocks.items()

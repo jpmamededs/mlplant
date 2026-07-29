@@ -1,8 +1,10 @@
 README.md
 pyproject.toml
 mlplant/__init__.py
+mlplant/__main__.py
 mlplant/builder.py
 mlplant/cli.py
+mlplant/decorators.py
 mlplant/parser.py
 mlplant.egg-info/PKG-INFO
 mlplant.egg-info/SOURCES.txt

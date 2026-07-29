@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mlplant"
+name = "mlplant-cli"
 version = "0.1.0"
 description = "MLOps framework that converts exploratory Jupyter notebooks into production-ready API projects."
 readme = "README.md"
