@@ -1,4 +1,5 @@
-# mlplant
+<img width="1200" height="256" alt="mlplant-white" src="https://github.com/user-attachments/assets/f00dff6c-9984-42c7-9170-78e5ee3251d1" /><?xml version="1.0" encoding="UTF-8"?>
+
 
 mlplant is an MLOps framework that converts exploratory Jupyter notebooks into production-ready FastAPI projects using in-cell annotations.
 
