@@ -1,3 +1,9 @@
-# preprocessing.py: Cleaning and preprocessing extracted by mlplant
+"""preprocessing.py — Data cleaning and preprocessing."""
 
-{{ code }}
+import pandas as pd
+
+
+def preprocess(df: pd.DataFrame) -> pd.DataFrame:
+    """Clean the input dataframe and return the result."""
+{{ code | indent(4, first=true) }}
+    return df

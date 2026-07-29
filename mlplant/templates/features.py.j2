@@ -1,3 +1,10 @@
-# features.py: Feature engineering extracted by mlplant
+"""features.py — Feature engineering."""
 
-{{ code }}
+import pandas as pd
+from typing import Tuple
+
+
+def build_features(df: pd.DataFrame) -> Tuple:
+    """Apply feature transformations and return (X, y)."""
+{{ code | indent(4, first=true) }}
+    return X, y

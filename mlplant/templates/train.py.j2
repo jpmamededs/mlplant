@@ -1,13 +1,20 @@
-# trainer.py: Model training extracted by mlplant
+"""trainer.py — Model training."""
+
+from config import *
 {% if mlflow %}
 import mlflow
 import mlflow.sklearn
-
-mlflow.set_experiment("{{ title }}")
-
-with mlflow.start_run():
-{{ code | indent(4) }}
-    mlflow.log_params(locals())
-{% else %}
-{{ code }}
 {% endif %}
+
+
+def train(X_train, y_train):
+    """Fit the model on training data and return it."""
+{% if mlflow %}
+    mlflow.set_experiment("{{ title }}")
+    with mlflow.start_run():
+{{ code | indent(8, first=true) }}
+        mlflow.log_params(locals())
+{% else %}
+{{ code | indent(4, first=true) }}
+{% endif %}
+    return model

@@ -1,3 +1,9 @@
-# evaluate.py: Evaluation metrics extracted by mlplant
+"""evaluate.py — Model evaluation."""
 
-{{ code }}
+from typing import Any, Dict
+
+
+def evaluate(model, X_test, y_test) -> Dict[str, Any]:
+    """Evaluate the model and return a dictionary of metrics."""
+{{ code | indent(4, first=true) }}
+    return metrics

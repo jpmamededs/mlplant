@@ -1,3 +1,15 @@
-# artifacts.py: Artifact serialization and saving extracted by mlplant
+"""artifacts.py — Model serialization and loading."""
 
-{{ code }}
+import joblib
+
+MODEL_PATH = "model.joblib"
+
+
+def save_model(model, path: str = MODEL_PATH) -> None:
+    """Serialize and persist the trained model."""
+{{ code | indent(4, first=true) }}
+
+
+def load_model(path: str = MODEL_PATH):
+    """Load and return the model from disk."""
+    return joblib.load(path)
