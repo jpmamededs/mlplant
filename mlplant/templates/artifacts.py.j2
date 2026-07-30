@@ -3,11 +3,18 @@
 import joblib
 
 MODEL_PATH = "model.joblib"
+{% if module_code %}
 
+{{ module_code }}
+{% endif %}
 
 def save_model(model, path: str = MODEL_PATH) -> None:
     """Serialize and persist the trained model."""
-{{ code | indent(4, first=true) }}
+{% if body_code %}
+{{ body_code | indent(4, first=true) }}
+{% else %}
+    pass
+{% endif %}
 
 
 def load_model(path: str = MODEL_PATH):

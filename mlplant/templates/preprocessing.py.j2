@@ -1,9 +1,16 @@
 """preprocessing.py — Data cleaning and preprocessing."""
 
 import pandas as pd
+{% if module_code %}
 
+{{ module_code }}
+{% endif %}
 
 def preprocess(df: pd.DataFrame) -> pd.DataFrame:
     """Clean the input dataframe and return the result."""
-{{ code | indent(4, first=true) }}
+{% if body_code %}
+{{ body_code | indent(4, first=true) }}
+{% else %}
+    pass
+{% endif %}
     return df

@@ -28,7 +28,7 @@ import re
 import textwrap
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import nbformat
 
@@ -44,8 +44,48 @@ PIPELINE_ANNOTATIONS = [
     "predict",
 ]
 
-# Matches a real decorator line: @mlplant.<step>  (whole line)
-ANNOTATION_PATTERN = re.compile(r"^@mlplant\.(\w+)\s*$", re.MULTILINE)
+# PascalCase aliases → canonical step name.
+PASCAL_TO_STEP: Dict[str, str] = {
+    "Config": "config",
+    "LoadData": "load_data",
+    "Preprocessing": "preprocessing",
+    "Features": "features",
+    "Train": "train",
+    "Evaluate": "evaluate",
+    "Artifacts": "artifacts",
+    "Predict": "predict",
+}
+
+_PASCAL_ALT = "|".join(PASCAL_TO_STEP)
+
+# Supported annotation forms (each tuple: pattern, is_pascal_capture):
+#   mlplant.step()  |  mlplant.step  |  @mlplant.step  |  # @mlplant.step
+#   Config()        |  Config        |  @Config        |  # @Config
+_ANNOT_PATTERNS: List[Tuple[re.Pattern, bool]] = [
+    (re.compile(r"^@?mlplant\.(\w+)\s*\(\s*\)\s*$"), False),       # mlplant.step()  ← preferred
+    (re.compile(r"^@?mlplant\.(\w+)\s*$"), False),                  # mlplant.step / @mlplant.step
+    (re.compile(r"^#\s*@?mlplant\.(\w+)\s*$"), False),              # # @mlplant.step
+    (re.compile(rf"^@?({_PASCAL_ALT})\s*\(\s*\)\s*$"), True),       # Config()
+    (re.compile(rf"^@?({_PASCAL_ALT})\s*$"), True),                  # Config / @Config
+    (re.compile(rf"^#\s*@?({_PASCAL_ALT})\s*$"), True),             # # @Config
+]
+
+
+def _match_annotation_line(line: str) -> Optional[str]:
+    """Return canonical step name if *line* is an annotation, else None."""
+    stripped = line.strip()
+    for pattern, is_pascal in _ANNOT_PATTERNS:
+        m = pattern.match(stripped)
+        if m:
+            name = m.group(1)
+            step = PASCAL_TO_STEP.get(name, name) if is_pascal else name
+            if step in PIPELINE_ANNOTATIONS:
+                return step
+    return None
+
+
+def is_annotation_line(line: str) -> bool:
+    return _match_annotation_line(line) is not None
 
 # Matches an anonymous wrapper:  def _():  or  async def _():
 _ANON_DEF = re.compile(r"^\s*(async\s+)?def\s+_\s*\(")
@@ -71,12 +111,44 @@ def clean_code(code: str) -> str:
     return "\n".join(cleaned).strip()
 
 
+def split_module_body(code: str) -> tuple:
+    """Split *code* into (module_defs, body_statements).
+
+    Top-level ``def`` / ``async def`` / ``class`` nodes are returned as
+    *module_defs* — they must live at module scope, not inside a wrapper
+    function.  Everything else is returned as *body_statements* and can be
+    safely indented inside the template's wrapper function.
+
+    Falls back to ("", code) when the source cannot be parsed.
+    """
+    if not code.strip():
+        return "", ""
+    try:
+        import ast as _ast
+        tree = _ast.parse(code)
+    except SyntaxError:
+        return "", code
+
+    lines = code.splitlines()
+    module_parts: List[str] = []
+    body_parts: List[str] = []
+
+    for node in tree.body:
+        node_lines = lines[node.lineno - 1: node.end_lineno]
+        chunk = "\n".join(node_lines)
+        if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef, _ast.ClassDef)):
+            module_parts.append(chunk)
+        else:
+            body_parts.append(chunk)
+
+    return "\n\n".join(module_parts), "\n".join(body_parts)
+
+
 def detect_annotation(code: str) -> Optional[str]:
-    """Return the step name if the cell declares @mlplant.<step>, else None."""
-    match = ANNOTATION_PATTERN.search(code)
-    if match:
-        step = match.group(1)
-        if step in PIPELINE_ANNOTATIONS:
+    """Return the step name if any line in the cell is a recognised annotation."""
+    for line in code.splitlines():
+        step = _match_annotation_line(line)
+        if step is not None:
             return step
     return None
 
@@ -94,10 +166,10 @@ def extract_code(source: str, has_annotation: bool) -> str:
     if not has_annotation:
         return source.strip()
 
-    # Remove the @mlplant.* decorator line(s)
+    # Remove annotation lines in all supported forms
     lines_without_decorator = [
         line for line in source.splitlines()
-        if not ANNOTATION_PATTERN.match(line.strip())
+        if not is_annotation_line(line)
     ]
     code_no_decorator = "\n".join(lines_without_decorator).strip()
 

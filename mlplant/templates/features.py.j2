@@ -2,9 +2,16 @@
 
 import pandas as pd
 from typing import Tuple
+{% if module_code %}
 
+{{ module_code }}
+{% endif %}
 
 def build_features(df: pd.DataFrame) -> Tuple:
     """Apply feature transformations and return (X, y)."""
-{{ code | indent(4, first=true) }}
+{% if body_code %}
+{{ body_code | indent(4, first=true) }}
+{% else %}
+    pass
+{% endif %}
     return X, y
