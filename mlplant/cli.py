@@ -7,6 +7,9 @@ Usage:
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import typer
@@ -94,6 +97,15 @@ def build(
         rich_help_panel="Integrations",
         metavar="PLATFORM",
     ),
+    train_after_build: bool = typer.Option(
+        True,
+        "--train/--no-train",
+        help=(
+            "Run generated train_pipeline.py right after build so model artifacts "
+            "are ready for production API startup."
+        ),
+        rich_help_panel="Integrations",
+    ),
 ):
     """Build a production [bold]FastAPI[/bold] project from an annotated notebook."""
 
@@ -173,6 +185,66 @@ def build(
         progress.remove_task(task)
 
     console.print(f"\n[bold green]✓ Project successfully generated at:[/bold green] {destination.resolve()}")
+
+    if train_after_build:
+        notebook_base_dir = Path(notebook).resolve().parent
+        output_dir = Path(destination).resolve()
+
+        artifacts_dir = str((Path(destination) / "artifacts").resolve())
+        train_env = os.environ.copy()
+        train_env["MLPLANT_ARTIFACTS_DIR"] = artifacts_dir
+        train_env.setdefault("MLFLOW_LOCAL_TRACKING_URI", f"sqlite:///{(output_dir / 'artifacts' / 'mlflow.db').resolve().as_posix()}")
+
+        with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=console, transient=True) as progress:
+            task = progress.add_task("Training generated pipeline...", total=None)
+            try:
+                completed = subprocess.run(
+                    [sys.executable, str((Path(destination) / "train_pipeline.py").resolve())],
+                    cwd=str(notebook_base_dir),
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    env=train_env,
+                )
+            except subprocess.CalledProcessError as exc:
+                progress.remove_task(task)
+                if exc.stdout:
+                    console.print("\n[bold]Training stdout:[/bold]")
+                    console.print(exc.stdout.strip())
+                if exc.stderr:
+                    console.print("\n[bold]Training stderr:[/bold]")
+                    console.print(exc.stderr.strip())
+
+                stderr_lower = (exc.stderr or "").lower()
+                missing_data_error = (
+                    "filenotfounderror" in stderr_lower
+                    or "no such file or directory" in stderr_lower
+                )
+
+                if missing_data_error:
+                    console.print(
+                        "\n[bold yellow]Training warning:[/bold yellow] "
+                        "Auto-training was skipped because required dataset files "
+                        "were not found."
+                    )
+                    console.print(
+                        "[yellow]The project was generated successfully, but model artifacts "
+                        "were not created yet. Update load_data() paths or provide the dataset, "
+                        "then run train_pipeline.py manually.[/yellow]"
+                    )
+                    return
+
+                console.print("\n[bold red]Training error:[/bold red] Generated pipeline failed to run.")
+                raise typer.Exit(code=1)
+
+            progress.remove_task(task)
+            if completed.stdout:
+                console.print("\n[bold]Training output:[/bold]")
+                console.print(completed.stdout.strip())
+
+        console.print("[bold green]✓ Artifacts generated. API is ready to serve predictions.[/bold green]")
+    else:
+        console.print("[yellow]Training skipped (--no-train). Run train_pipeline.py before serving the API.[/yellow]")
 
 
 @app.command("inspect")

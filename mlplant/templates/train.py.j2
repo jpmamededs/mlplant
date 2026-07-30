@@ -1,6 +1,12 @@
 """trainer.py — Model training."""
 
+import os
+from numbers import Integral
+from pathlib import Path
+from typing import Any, Dict
+
 from config import *
+from artifacts import save_runtime_bundle
 {% if mlflow %}
 import mlflow
 import mlflow.sklearn
@@ -10,22 +16,211 @@ import mlflow.sklearn
 {{ module_code }}
 {% endif %}
 
-def train(X_train, y_train):
-    """Fit the model on training data and return it."""
+
+def _is_estimator(obj: Any) -> bool:
+    return hasattr(obj, "fit") and hasattr(obj, "predict")
+
+
+def _extract_models(local_vars: dict) -> Dict[str, Any]:
+    models: Dict[str, Any] = {}
+    for name, obj in local_vars.items():
+        if name.startswith("_"):
+            continue
+        if _is_estimator(obj):
+            models[name] = obj
+    return models
+
+
+def _extract_metrics(local_vars: dict) -> Dict[str, Any]:
+    metrics: Dict[str, Any] = {}
+    for name, value in local_vars.items():
+        lname = name.lower()
+        if "metric" in lname or "score" in lname or lname.startswith("f1"):
+            if isinstance(value, (int, float)):
+                metrics[name] = float(value)
+            elif hasattr(value, "item"):
+                try:
+                    metrics[name] = float(value.item())
+                except Exception:
+                    continue
+    return metrics
+
+
+def _mlflow_safe_params(local_vars: dict) -> Dict[str, Any]:
+    serializable: Dict[str, Any] = {}
+    for key, value in local_vars.items():
+        if key.startswith("_"):
+            continue
+        if isinstance(value, (str, int, float, bool)):
+            serializable[key] = value
+    return serializable
+
+
+def _to_list(values: Any) -> list:
+    if hasattr(values, "tolist"):
+        return values.tolist()
+    return list(values)
+
+
+def _auto_select_model(models: Dict[str, Any], X_val: Any, y_val: Any) -> tuple[str | None, Dict[str, float]]:
+    """Choose the best model on validation data and return per-model scores."""
+    if X_val is None or y_val is None:
+        return None, {}
+
+    try:
+        from sklearn.metrics import balanced_accuracy_score, r2_score
+    except Exception:
+        return None, {}
+
+    y_list = _to_list(y_val)
+    unique_targets = set(y_list)
+    if len(unique_targets) <= 1:
+        return None, {}
+
+    is_classification = all(isinstance(v, (str, bool, Integral)) for v in unique_targets)
+
+    best_name = None
+    best_score = float("-inf")
+    score_name = "balanced_accuracy" if is_classification else "r2"
+    model_scores: Dict[str, float] = {}
+
+    for name, model in models.items():
+        try:
+            y_pred = model.predict(X_val)
+            if is_classification:
+                score = float(balanced_accuracy_score(y_val, y_pred))
+            else:
+                score = float(r2_score(y_val, y_pred))
+        except Exception:
+            continue
+
+        model_scores[f"val_{score_name}_{name}"] = score
+        if score > best_score:
+            best_score = score
+            best_name = name
+
+    return best_name, model_scores
+
+
 {% if mlflow %}
+def _local_mlflow_tracking_uri() -> str:
+    custom_local_uri = os.getenv("MLFLOW_LOCAL_TRACKING_URI", "").strip()
+    if custom_local_uri:
+        return custom_local_uri
+
+    artifacts_dir = os.getenv("MLPLANT_ARTIFACTS_DIR", "artifacts")
+    artifacts_path = Path(artifacts_dir).resolve()
+    artifacts_path.mkdir(parents=True, exist_ok=True)
+    db_path = artifacts_path / "mlflow.db"
+    db_uri = db_path.as_posix()
+    return f"sqlite:///{db_uri}"
+
+
+def _start_mlflow_run() -> tuple[bool, Any]:
+    """Start MLflow run with local fallback when remote tracking is unavailable."""
+    preferred_uri = os.getenv("MLFLOW_TRACKING_URI", "{{ mlflow_tracking_uri }}").strip()
+
+    if preferred_uri:
+        try:
+            mlflow.set_tracking_uri(preferred_uri)
+            mlflow.set_experiment("{{ title }}")
+            run = mlflow.start_run()
+            run.__enter__()
+            return True, run
+        except Exception as exc:
+            print(
+                f"[mlplant] MLflow remote tracking unavailable at {preferred_uri}: {exc}. "
+                "Falling back to local file tracking."
+            )
+
+    local_uri = _local_mlflow_tracking_uri()
+    mlflow.set_tracking_uri(local_uri)
     mlflow.set_experiment("{{ title }}")
-    with mlflow.start_run():
+    run = mlflow.start_run()
+    run.__enter__()
+    print(f"[mlplant] MLflow local tracking active at {local_uri}")
+    return True, run
+{% endif %}
+
+def train(X_train, y_train, X_val=None, y_val=None):
+    """Fit the model(s), persist artifacts, and return a training summary."""
+{% if mlflow %}
+    mlflow_enabled, mlflow_run = _start_mlflow_run()
+    try:
 {% if body_code %}
 {{ body_code | indent(8, first=true) }}
 {% else %}
         pass
 {% endif %}
-        mlflow.log_params(locals())
+        local_vars = locals().copy()
+        models = _extract_models(local_vars)
+        if not models:
+            raise RuntimeError("No trained models were found in the training step.")
+
+        selected_model = local_vars.get("selected_model") or local_vars.get("best_model_name")
+        metrics = _extract_metrics(local_vars)
+        auto_selected_model, auto_scores = _auto_select_model(models, X_val, y_val)
+        if not selected_model and auto_selected_model:
+            selected_model = auto_selected_model
+        metrics.update(auto_scores)
+
+        metadata = save_runtime_bundle(
+            models=models,
+            label_encoder=globals().get("le"),
+            selected_model=selected_model,
+            metrics=metrics,
+            extra_metadata={
+                "title": "{{ title }}",
+                "mlflow_enabled": mlflow_enabled,
+                "mlflow_tracking_uri": mlflow.get_tracking_uri() if mlflow_enabled else None,
+            },
+        )
+
+        if mlflow_enabled:
+            mlflow.log_params(_mlflow_safe_params(local_vars))
+            if metrics:
+                mlflow.log_metrics(metrics)
+            mlflow.log_artifacts(os.getenv("MLPLANT_ARTIFACTS_DIR", "artifacts"))
+
+        return {
+            "selected_model": metadata.get("selected_model"),
+            "models": list(models.keys()),
+            "metrics": metrics,
+            "artifacts": metadata,
+        }
+    finally:
+        if mlflow_enabled and mlflow_run is not None:
+            mlflow_run.__exit__(None, None, None)
 {% else %}
 {% if body_code %}
 {{ body_code | indent(4, first=true) }}
 {% else %}
     pass
 {% endif %}
+    local_vars = locals().copy()
+    models = _extract_models(local_vars)
+    if not models:
+        raise RuntimeError("No trained models were found in the training step.")
+
+    selected_model = local_vars.get("selected_model") or local_vars.get("best_model_name")
+    metrics = _extract_metrics(local_vars)
+    auto_selected_model, auto_scores = _auto_select_model(models, X_val, y_val)
+    if not selected_model and auto_selected_model:
+        selected_model = auto_selected_model
+    metrics.update(auto_scores)
+
+    metadata = save_runtime_bundle(
+        models=models,
+        label_encoder=globals().get("le"),
+        selected_model=selected_model,
+        metrics=metrics,
+        extra_metadata={"title": "{{ title }}", "mlflow_enabled": False},
+    )
+
+    return {
+        "selected_model": metadata.get("selected_model"),
+        "models": list(models.keys()),
+        "metrics": metrics,
+        "artifacts": metadata,
+    }
 {% endif %}
-    return model

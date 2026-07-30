@@ -1,22 +1,146 @@
-"""artifacts.py — Model serialization and loading."""
+"""artifacts.py — Model serialization and loading for production runtime."""
+
+import json
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict
 
 import joblib
+{% if 'config' in detected_steps %}
+from config import *
+{% endif %}
 
-MODEL_PATH = "model.joblib"
+ARTIFACTS_DIR = os.getenv("MLPLANT_ARTIFACTS_DIR", "artifacts")
+MODELS_DIR = os.path.join(ARTIFACTS_DIR, "models")
+METADATA_PATH = os.path.join(ARTIFACTS_DIR, "metadata.json")
+LABEL_ENCODER_PATH = os.path.join(ARTIFACTS_DIR, "label_encoder.joblib")
+MODEL_PATH = os.path.join(MODELS_DIR, "model.joblib")
 {% if module_code %}
 
 {{ module_code }}
 {% endif %}
 
-def save_model(model, path: str = MODEL_PATH) -> None:
-    """Serialize and persist the trained model."""
+
+def _ensure_dirs() -> None:
+    Path(MODELS_DIR).mkdir(parents=True, exist_ok=True)
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(v) for v in value]
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except Exception:
+            return str(value)
+    return str(value)
+
+
+def save_runtime_bundle(
+    models: Dict[str, Any],
+    label_encoder: Any = None,
+    selected_model: str | None = None,
+    metrics: Dict[str, Any] | None = None,
+    extra_metadata: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    """Persist models + metadata in a deterministic artifact contract."""
+    if not models:
+        raise ValueError("No trained models were provided for artifact serialization.")
+
+    _ensure_dirs()
+    model_names = []
+
+    for name, model in models.items():
+        if model is None:
+            continue
+        model_path = os.path.join(MODELS_DIR, f"{name}.joblib")
+        joblib.dump(model, model_path)
+        model_names.append(name)
+
+    if not model_names:
+        raise ValueError("No valid trained model objects found to persist.")
+
+    selected = selected_model if selected_model in model_names else model_names[0]
+
+    if label_encoder is not None:
+        joblib.dump(label_encoder, LABEL_ENCODER_PATH)
+
+    metadata = {
+        "artifact_schema_version": "1.0.0",
+        "created_at_utc": datetime.now(timezone.utc).isoformat(),
+        "models": model_names,
+        "selected_model": selected,
+        "metrics": _json_safe(metrics or {}),
+        "extra": _json_safe(extra_metadata or {}),
+    }
+
+    with open(METADATA_PATH, "w", encoding="utf-8") as fp:
+        json.dump(metadata, fp, indent=2, ensure_ascii=False)
+
+    return metadata
+
+
+def load_runtime_bundle() -> Dict[str, Any]:
+    """Load runtime bundle with models, metadata and optional label encoder."""
+    if not os.path.isdir(MODELS_DIR):
+        raise RuntimeError(
+            f"Artifacts directory '{MODELS_DIR}' not found. Run training first."
+        )
+
+    metadata: Dict[str, Any] = {}
+    if os.path.isfile(METADATA_PATH):
+        with open(METADATA_PATH, "r", encoding="utf-8") as fp:
+            metadata = json.load(fp)
+
+    models: Dict[str, Any] = {}
+    model_names = metadata.get("models") if isinstance(metadata, dict) else None
+
+    if model_names:
+        for name in model_names:
+            model_path = os.path.join(MODELS_DIR, f"{name}.joblib")
+            if os.path.isfile(model_path):
+                models[name] = joblib.load(model_path)
+    else:
+        # Backward compatibility with legacy folders that only have *.joblib files.
+        for filename in os.listdir(MODELS_DIR):
+            if filename.endswith(".joblib"):
+                name = filename[:-7]
+                models[name] = joblib.load(os.path.join(MODELS_DIR, filename))
+
+    if not models:
+        raise RuntimeError("No trained models found in artifacts. Run training first.")
+
+    label_encoder = None
+    if os.path.isfile(LABEL_ENCODER_PATH):
+        label_encoder = joblib.load(LABEL_ENCODER_PATH)
+
+    selected_model = metadata.get("selected_model") if metadata else None
+    if selected_model not in models:
+        selected_model = next(iter(models.keys()))
+
+    return {
+        "models": models,
+        "label_encoder": label_encoder,
+        "selected_model": selected_model,
+        "metadata": metadata,
+    }
+
+
+def save_model(model: Any, path: str = MODEL_PATH) -> None:
+    """Serialize and persist a single model object."""
 {% if body_code %}
 {{ body_code | indent(4, first=true) }}
 {% else %}
-    pass
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    joblib.dump(model, path)
 {% endif %}
 
 
 def load_model(path: str = MODEL_PATH):
-    """Load and return the model from disk."""
+    """Load and return a model from disk."""
     return joblib.load(path)
