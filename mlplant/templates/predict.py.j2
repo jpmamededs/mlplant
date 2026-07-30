@@ -1,3 +1,173 @@
 """predict.py — Inference function exposed at POST /predict."""
 
-{{ code }}
+import os
+import joblib
+import numpy as np
+import pandas as pd
+from typing import Any, Dict
+
+from config import *
+
+try:
+    from features import build_features
+except Exception:
+    def build_features(df):
+        return df
+
+try:
+    from preprocessing import preprocess
+except Exception:
+    def preprocess(df):
+        return df
+
+try:
+    from artifacts import load_runtime_bundle
+except Exception:
+    load_runtime_bundle = None
+
+{% if module_code %}
+{{ module_code }}
+
+{% endif %}
+{% if 'def predict' in (module_code or '') %}
+def preload_runtime() -> None:
+    """No-op for user-defined predict implementation."""
+    return None
+
+
+def predict_with_metadata(data: dict) -> Dict[str, Any]:
+    """Wrap user-defined predict with a stable API response contract."""
+    return {"prediction": predict(data), "model": "custom_predict"}
+{% else %}
+_runtime: Dict[str, Any] = {
+    "models": {},
+    "label_encoder": None,
+    "selected_model": None,
+    "metadata": {},
+}
+
+
+def _load_legacy_runtime() -> Dict[str, Any]:
+    models = {}
+    label_encoder = None
+
+    legacy_models_dir = "models"
+    if not os.path.isdir(legacy_models_dir):
+        raise RuntimeError(
+            "No artifacts were found. Run training before starting the API."
+        )
+
+    for filename in os.listdir(legacy_models_dir):
+        file_path = os.path.join(legacy_models_dir, filename)
+        if filename == "label_encoder.joblib":
+            label_encoder = joblib.load(file_path)
+        elif filename.endswith(".joblib"):
+            models[filename[:-7]] = joblib.load(file_path)
+
+    if not models:
+        raise RuntimeError("No trained models found in legacy 'models/' directory.")
+
+    selected_model = next(iter(models.keys()))
+    return {
+        "models": models,
+        "label_encoder": label_encoder,
+        "selected_model": selected_model,
+        "metadata": {"source": "legacy_models_dir"},
+    }
+
+
+def _ensure_runtime_loaded() -> None:
+    if _runtime["models"]:
+        return
+
+    if callable(load_runtime_bundle):
+        bundle = load_runtime_bundle()
+    else:
+        bundle = _load_legacy_runtime()
+
+    _runtime.update(bundle)
+
+
+def preload_runtime() -> None:
+    """Preload runtime artifacts during API startup."""
+    _ensure_runtime_loaded()
+
+
+def _predict_from_models(df: pd.DataFrame) -> tuple[Any, str | None]:
+    models = _runtime["models"]
+    if not models:
+        raise RuntimeError("No trained model loaded in runtime cache.")
+
+    selected_name = _runtime.get("selected_model")
+    selected_model = models.get(selected_name) if selected_name else None
+
+    if selected_model is not None:
+        if hasattr(selected_model, "predict"):
+            raw = selected_model.predict(df)[0]
+        else:
+            raise RuntimeError(f"Model '{selected_name}' does not implement predict().")
+        return raw, selected_name
+
+    all_models = list(models.items())
+    probas = []
+    numeric_preds = []
+    raw_preds = []
+
+    for _, model in all_models:
+        if hasattr(model, "predict_proba"):
+            probas.append(model.predict_proba(df))
+            continue
+
+        pred_value = model.predict(df)[0]
+        raw_preds.append(pred_value)
+        if isinstance(pred_value, (int, float, np.number, np.integer, np.floating)):
+            numeric_preds.append(float(pred_value))
+
+    if probas:
+        avg_proba = np.mean(np.stack(probas), axis=0)
+        predicted = int(np.argmax(avg_proba, axis=1)[0])
+        return predicted, None
+
+    if numeric_preds:
+        return float(np.mean(numeric_preds)), None
+
+    return raw_preds[0], None
+
+
+def predict(data: dict):
+    """Run inference on a single input sample and return only the prediction."""
+    result = predict_with_metadata(data)
+    return result["prediction"]
+
+
+def predict_with_metadata(data: dict) -> Dict[str, Any]:
+    """Run inference and return prediction plus model metadata."""
+    _ensure_runtime_loaded()
+
+    df = pd.DataFrame([data])
+    featured = build_features(df)
+    if featured is not None:
+        df = featured
+
+    processed = preprocess(df)
+    if processed is not None:
+        df = processed
+
+    raw_prediction, model_name = _predict_from_models(df)
+
+    label_encoder = _runtime.get("label_encoder")
+    if label_encoder is not None and isinstance(
+        raw_prediction, (int, np.integer, np.int64)
+    ):
+        try:
+            decoded = label_encoder.inverse_transform([int(raw_prediction)])[0]
+            raw_prediction = decoded
+        except Exception:
+            pass
+
+    return {
+        "prediction": raw_prediction,
+        "model": model_name or _runtime.get("selected_model"),
+    }
+
+{% endif %}

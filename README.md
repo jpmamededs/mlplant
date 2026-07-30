@@ -92,6 +92,23 @@ mlplant build my_notebook.ipynb --output ./api --port 8080 --title "My API" --do
 python -m mlplant build my_notebook.ipynb --output ./api --docker
 ```
 
+By default, `build` now also runs `train_pipeline.py` in the generated project,
+so the API starts with ready-to-serve artifacts in `artifacts/`.
+
+Data files can stay at the project root (for example `data/train.csv`).
+During auto-training, mlplant keeps reading data from the notebook/project root,
+but all generated pipeline outputs are written under the selected output folder.
+
+With `--mlflow`, if a remote tracking server is unavailable, mlplant
+automatically falls back to local SQLite tracking (no server required),
+stored in `output/artifacts/mlflow.db`.
+
+To generate files only (without training), use:
+
+```bash
+mlplant build my_notebook.ipynb --output ./api --no-train
+```
+
 ### 3. Inspect detected steps
 
 ```bash
@@ -125,4 +142,24 @@ mlplant build <notebook> [OPTIONS]
   --workers       Uvicorn workers              (default: 1)
   --docker        Generate optimized Dockerfile
   --mlflow        Inject MLflow tracking into training
+  --train         Run generated train pipeline after build (default)
+  --no-train      Skip training during build
 ```
+
+## Output layout after build
+
+Generated code is placed in the output folder (`./output` by default):
+
+- `output/main.py`
+- `output/src/*`
+- `output/train_pipeline.py`
+- `output/requirements.txt`
+- `output/Dockerfile` (when `--docker` is enabled)
+
+Pipeline runtime artifacts are also kept in the output folder:
+
+- `output/artifacts/models/*.joblib`
+- `output/artifacts/metadata.json`
+- `output/artifacts/label_encoder.joblib` (when available)
+- `output/artifacts/mlflow.db` (local MLflow SQLite tracking)
+- `output/artifacts/catboost_info/` (CatBoost auxiliary outputs)

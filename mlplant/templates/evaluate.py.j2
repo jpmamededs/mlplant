@@ -1,6 +1,9 @@
 """evaluate.py — Model evaluation."""
 
 from typing import Any, Dict
+{% if 'config' in detected_steps %}
+from config import *
+{% endif %}
 {% if module_code %}
 
 {{ module_code }}
@@ -10,7 +13,9 @@ def evaluate(model, X_test, y_test) -> Dict[str, Any]:
     """Evaluate the model and return a dictionary of metrics."""
 {% if body_code %}
 {{ body_code | indent(4, first=true) }}
-{% else %}
-    pass
-{% endif %}
     return metrics
+{% else %}
+    y_pred = model.predict(X_test)
+    score = balanced_accuracy_score(y_test, y_pred)
+    return {"balanced_accuracy": float(score)}
+{% endif %}

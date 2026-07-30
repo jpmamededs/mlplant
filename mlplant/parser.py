@@ -74,11 +74,12 @@ _ANNOT_PATTERNS: List[Tuple[re.Pattern, bool]] = [
 def _match_annotation_line(line: str) -> Optional[str]:
     """Return canonical step name if *line* is an annotation, else None."""
     stripped = line.strip()
-    for pattern, is_pascal in _ANNOT_PATTERNS:
+    for pattern, _is_pascal in _ANNOT_PATTERNS:
         m = pattern.match(stripped)
         if m:
             name = m.group(1)
-            step = PASCAL_TO_STEP.get(name, name) if is_pascal else name
+            # Always try PASCAL_TO_STEP so mlplant.Features() and # @Config both resolve
+            step = PASCAL_TO_STEP.get(name, name)
             if step in PIPELINE_ANNOTATIONS:
                 return step
     return None
@@ -96,9 +97,17 @@ _ANY_DEF = re.compile(r"^\s*(async\s+)?def\s+\w+\s*\(")
 # Visual-only code patterns stripped during extraction.
 NOISE_PATTERNS = [
     re.compile(r"^\s*(import\s+(matplotlib|seaborn|plotly)|from\s+(matplotlib|seaborn|plotly))"),
-    re.compile(r"^\s*(plt\.|sns\.|fig\s*=|ax\s*=|plt\.show|plt\.savefig)"),
+    re.compile(r"^\s*import\s+mlplant\s*$"),                          # mlplant import in mixed cells
+    re.compile(r"^\s*(plt\.|sns\.|fig\s*[,.]|ax\s*[,.=]|plt\.show|plt\.savefig)"),
+    re.compile(r"^\s*ax\."),                                          # ax.set_title(), ax.tick_params(), etc.
+    re.compile(r"^\s*\w*[Dd]isplay\.from_"),                          # sklearn display objects
     re.compile(r"^\s*display\s*\("),
     re.compile(r"^\s*print\s*\("),
+    # Standalone EDA display calls (unassigned — result is only displayed in Jupyter)
+    re.compile(r"^\s*[\w\[\].'\"]+\.(?:hist|head|tail|describe|info|boxplot|isnull|isna)\s*\("),
+    re.compile(r"^\s*[\w\[\].'\"]+\.value_counts\s*\("),
+    re.compile(r"^\s*[\w\[\].'\"]+(?:\.[\w]+\([^)]*\))+\.(?:corr|head|tail|describe)\s*\("),
+    re.compile(r"^\s*pd\.(?:Series|DataFrame)\s*\(.*\)\."),           # pd.Series(...).sort_values() etc.
 ]
 
 
@@ -107,8 +116,37 @@ def is_noise_line(line: str) -> bool:
 
 
 def clean_code(code: str) -> str:
-    cleaned = [line for line in code.splitlines() if not is_noise_line(line)]
-    return "\n".join(cleaned).strip()
+    """Remove visual-noise statements from *code*.
+
+    Uses AST-level filtering so that multi-line display calls (e.g.
+    ConfusionMatrixDisplay.from_predictions(...)) are removed in full,
+    not just their first line. Falls back to line-by-line on SyntaxError.
+    """
+    if not code.strip():
+        return code
+
+    try:
+        import ast as _ast
+        tree = _ast.parse(code)
+        lines = code.splitlines(keepends=True)
+
+        # Mark all lines belonging to expression statements whose first line is noise
+        noise_linenos: set = set()
+        for node in tree.body:
+            if isinstance(node, _ast.Expr):
+                first = lines[node.lineno - 1] if node.lineno <= len(lines) else ""
+                if is_noise_line(first):
+                    noise_linenos.update(range(node.lineno, node.end_lineno + 1))
+
+        cleaned = [
+            line for i, line in enumerate(lines, 1)
+            if i not in noise_linenos and not is_noise_line(line)
+        ]
+        return "".join(cleaned).strip()
+
+    except SyntaxError:
+        cleaned = [line for line in code.splitlines() if not is_noise_line(line)]
+        return "\n".join(cleaned).strip()
 
 
 def split_module_body(code: str) -> tuple:
@@ -136,7 +174,9 @@ def split_module_body(code: str) -> tuple:
     for node in tree.body:
         node_lines = lines[node.lineno - 1: node.end_lineno]
         chunk = "\n".join(node_lines)
-        if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef, _ast.ClassDef)):
+        # Hoist functions, classes, and imports to module scope
+        if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef, _ast.ClassDef,
+                              _ast.Import, _ast.ImportFrom)):
             module_parts.append(chunk)
         else:
             body_parts.append(chunk)

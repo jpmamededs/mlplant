@@ -1,0 +1,95 @@
+"""
+train_pipeline.py — Full training pipeline.
+Run once before starting the API:  python train_pipeline.py
+"""
+
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
+
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
+
+from data_loader import load_data
+from trainer import train
+from config import RANDOM_STATE
+
+try:
+    from features import build_features
+except Exception:
+    def build_features(df):
+        return df
+
+try:
+    from preprocessing import preprocess
+except Exception:
+    def preprocess(df):
+        return df
+
+
+def _resolve_target(train_df, target_payload):
+    """Resolve target labels from a column name or explicit array/series."""
+    if isinstance(target_payload, str):
+        if target_payload not in train_df.columns:
+            raise ValueError(
+                f"Target column '{target_payload}' not found in training dataframe."
+            )
+        return train_df.pop(target_payload)
+    if target_payload is None:
+        raise ValueError("'target_col' was not returned by load_data().")
+    return target_payload
+
+
+def main():
+    print("-> Loading data...")
+    data = load_data()
+
+    if "train_df" not in data:
+        raise ValueError("load_data() must return a 'train_df' entry.")
+    if "target_col" not in data:
+        raise ValueError("load_data() must return a 'target_col' entry.")
+
+    train_df = data["train_df"]
+    target_payload = data["target_col"]
+
+    print("-> Feature engineering...")
+    featured = build_features(train_df)
+    if featured is not None:
+        train_df = featured
+
+    print("-> Preprocessing...")
+    processed = preprocess(train_df)
+    if processed is not None:
+        train_df = processed
+
+    y_raw = _resolve_target(train_df, target_payload)
+
+    print("-> Splitting train / validation...")
+    try:
+        from config import le
+    except Exception:
+        le = LabelEncoder()
+
+    y = le.fit_transform(y_raw)
+
+    unique_classes = len(set(y.tolist() if hasattr(y, "tolist") else list(y)))
+    stratify_target = y if unique_classes > 1 else None
+
+    X_train, X_val, y_train, y_val = train_test_split(
+        train_df,
+        y,
+        test_size=0.2,
+        stratify=stratify_target,
+        random_state=RANDOM_STATE,
+    )
+
+    print("-> Training models...")
+    summary = train(X_train, y_train, X_val, y_val)
+
+    selected_model = summary.get("selected_model") if isinstance(summary, dict) else None
+    print(f"[OK] Training completed. Selected model: {selected_model}")
+    print("[OK] Artifacts saved to artifacts/ - API ready.")
+
+
+if __name__ == "__main__":
+    main()
