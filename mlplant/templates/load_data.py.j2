@@ -1,8 +1,15 @@
 """data_loader.py — Data ingestion."""
 
 import pandas as pd
+{% if module_code %}
 
+{{ module_code }}
+{% endif %}
 
 def load_data() -> pd.DataFrame:
     """Load raw data and return as a DataFrame."""
-{{ code | indent(4, first=true) }}
+{% if body_code %}
+{{ body_code | indent(4, first=true) }}
+{% else %}
+    pass
+{% endif %}

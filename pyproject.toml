@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mlplant-cli"
-version = "0.1.2"
+version = "0.1.3"
 description = "MLOps framework that converts exploratory Jupyter notebooks into production-ready API projects."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -17,6 +17,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+enterprise = [
+    "pyyaml>=6.0",    # mlplant.yaml config file support
+    "pydantic>=2.0",  # generated schemas.py
+]
 dev = [
     "pytest>=8.0",
     "pytest-cov",

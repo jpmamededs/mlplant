@@ -18,16 +18,19 @@ from typing import Callable
 
 
 class _StepDecorator:
-    """A no-op decorator that marks a cell function as a pipeline step."""
+    """A no-op marker that can be called as mlplant.step() or used as @mlplant.step."""
 
     def __init__(self, step: str) -> None:
         self.step = step
 
-    def __call__(self, fn: Callable) -> Callable:
+    def __call__(self, fn: Callable = None) -> Callable:  # type: ignore[assignment]
+        # Called with no args → cell marker (mlplant.config()); return self so it's chainable.
+        if fn is None:
+            return self  # type: ignore[return-value]
         return fn
 
     def __repr__(self) -> str:
-        return f"@mlplant.{self.step}"
+        return f"mlplant.{self.step}"
 
 
 class _MLPlantDecorators:

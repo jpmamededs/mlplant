@@ -1,9 +1,16 @@
 """evaluate.py — Model evaluation."""
 
 from typing import Any, Dict
+{% if module_code %}
 
+{{ module_code }}
+{% endif %}
 
 def evaluate(model, X_test, y_test) -> Dict[str, Any]:
     """Evaluate the model and return a dictionary of metrics."""
-{{ code | indent(4, first=true) }}
+{% if body_code %}
+{{ body_code | indent(4, first=true) }}
+{% else %}
+    pass
+{% endif %}
     return metrics

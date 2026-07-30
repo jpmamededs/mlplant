@@ -13,21 +13,34 @@ pip install mlplant-cli
 
 ### 1. Annotate your notebook
 
-Use Python decorators directly on functions inside your notebook cells:
+Place an annotation at the top of each cell to mark it as a pipeline step.
+Four syntax styles are supported — pick whichever fits your workflow:
+
+#### Function call *(recommended)*
+
+Valid before any code, reads like a registration call, no errors or warnings:
 
 ```python
 import mlplant
 
-@mlplant.config
-def _():
-    LEARNING_RATE = 0.01
-    N_ESTIMATORS = 100
+mlplant.config()
+LEARNING_RATE = 0.01
+N_ESTIMATORS = 100
 ```
 
 ```python
-@mlplant.features
+mlplant.features()
+X["new_feature"] = X["a"] / X["b"]
+```
+
+#### Decorator
+
+Clean decorator syntax, but **only valid immediately before a `def` or `class`**:
+
+```python
+@mlplant.train
 def _():
-    X["new_feature"] = X["a"] / X["b"]
+    model.fit(X_train, y_train)
 ```
 
 ```python
@@ -36,7 +49,37 @@ def predict(data: dict):
     return model.predict([list(data.values())])[0]
 ```
 
-> Cells with the same decorator are automatically merged into a single output file.
+#### Expression
+
+Minimal form — attribute access with no call. Valid anywhere, but Pylance may
+show an "expression value is unused" hint in some configurations:
+
+```python
+mlplant.load_data
+df = pd.read_csv("data/train.csv")
+```
+
+#### Comment
+
+Never causes any error or warning, useful when you want zero runtime footprint:
+
+```python
+# @mlplant.preprocessing
+df = df.dropna()
+df["age"] = df["age"].clip(0, 120)
+```
+
+---
+
+All styles also accept **PascalCase aliases** (`Config`, `LoadData`, `Train`, etc.):
+
+```python
+mlplant.LoadData()        # same as mlplant.load_data()
+# @Config                 # same as # @mlplant.config
+@mlplant.Train            # same as @mlplant.train (before a function)
+```
+
+> Cells with the same annotation are automatically merged into a single output file.
 > Visual noise (matplotlib, seaborn, print, display) is stripped automatically.
 
 ### 2. Build the project
@@ -58,18 +101,18 @@ mlplant inspect my_notebook.ipynb
 python -m mlplant inspect my_notebook.ipynb
 ```
 
-## Supported decorators
+## Supported annotations
 
-| Decorator | Generated file | Purpose |
-|---|---|---|
-| `@mlplant.config` | `src/config.py` | Hyperparameters and constants |
-| `@mlplant.load_data` | `src/data_loader.py` | Data ingestion |
-| `@mlplant.preprocessing` | `src/preprocessing.py` | Cleaning and null handling |
-| `@mlplant.features` | `src/features.py` | Feature engineering |
-| `@mlplant.train` | `src/trainer.py` | Model training |
-| `@mlplant.evaluate` | `src/evaluate.py` | Metrics and evaluation |
-| `@mlplant.artifacts` | `src/artifacts.py` | Model serialization |
-| `@mlplant.predict` | `src/predict.py` | Inference function (exposed at `/predict`) |
+| Annotation | PascalCase alias | Generated file | Purpose |
+|---|---|---|---|
+| `mlplant.config()` | `mlplant.Config()` | `src/config.py` | Hyperparameters and constants |
+| `mlplant.load_data()` | `mlplant.LoadData()` | `src/data_loader.py` | Data ingestion |
+| `mlplant.preprocessing()` | `mlplant.Preprocessing()` | `src/preprocessing.py` | Cleaning and null handling |
+| `mlplant.features()` | `mlplant.Features()` | `src/features.py` | Feature engineering |
+| `mlplant.train()` | `mlplant.Train()` | `src/trainer.py` | Model training |
+| `mlplant.evaluate()` | `mlplant.Evaluate()` | `src/evaluate.py` | Metrics and evaluation |
+| `mlplant.artifacts()` | `mlplant.Artifacts()` | `src/artifacts.py` | Model serialization |
+| `mlplant.predict()` | `mlplant.Predict()` | `src/predict.py` | Inference (exposed at `/predict`) |
 
 ## Build flags
 
