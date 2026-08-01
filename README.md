@@ -143,6 +143,7 @@ mlplant build <notebook> [OPTIONS]
   --workers       Uvicorn workers              (default: 1)
   --docker        Generate optimized Dockerfile
   --mlflow        Inject MLflow tracking into training
+  --ui            Generate React frontend scaffold for inference
   --train         Run generated train pipeline after build (default)
   --no-train      Skip training during build
 ```
@@ -155,7 +156,9 @@ Generated code is placed in the output folder (`./output` by default):
 - `output/src/*`
 - `output/train_pipeline.py`
 - `output/requirements.txt`
+- `output/predict_request_example.json` (payload blueprint for `/predict`)
 - `output/Dockerfile` (when `--docker` is enabled)
+- `output/ui/*` (when `--ui` is enabled)
 
 Pipeline runtime artifacts are also kept in the output folder:
 
@@ -164,3 +167,14 @@ Pipeline runtime artifacts are also kept in the output folder:
 - `output/artifacts/label_encoder.joblib` (when available)
 - `output/artifacts/mlflow.db` (local MLflow SQLite tracking)
 - `output/artifacts/catboost_info/` (CatBoost auxiliary outputs)
+
+When `--ui` is enabled:
+
+```bash
+cd output/ui
+npm install
+npm run dev
+```
+
+The frontend dynamically reads your API OpenAPI schema (`/openapi.json`) and
+builds the predict form from the generated `InputData` contract.

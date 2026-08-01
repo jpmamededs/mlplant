@@ -93,6 +93,56 @@ def preload_runtime() -> None:
     _ensure_runtime_loaded()
 
 
+def _expected_feature_names(model: Any) -> list[str]:
+    """Extract expected feature order from sklearn/xgboost/catboost-like models."""
+    if hasattr(model, "feature_names_in_"):
+        try:
+            names = [str(c) for c in model.feature_names_in_.tolist()]
+            if names:
+                return names
+        except Exception:
+            pass
+
+    if hasattr(model, "get_booster"):
+        try:
+            booster = model.get_booster()
+            names = [str(c) for c in (booster.feature_names or [])]
+            if names:
+                return names
+        except Exception:
+            pass
+
+    meta = _runtime.get("metadata") or {}
+    extra = meta.get("extra") if isinstance(meta, dict) else None
+    if isinstance(extra, dict):
+        names = extra.get("feature_columns")
+        if isinstance(names, list) and names:
+            return [str(c) for c in names]
+
+    return []
+
+
+def _align_features_for_model(df: pd.DataFrame, model: Any) -> pd.DataFrame:
+    """Align incoming dataframe to training-time feature columns."""
+    expected = _expected_feature_names(model)
+    if not expected:
+        return df
+
+    aligned = df.copy()
+
+    # Replace bool dtypes by ints for stable model ingestion.
+    for col in aligned.columns:
+        if aligned[col].dtype == bool:
+            aligned[col] = aligned[col].astype(int)
+
+    for col in expected:
+        if col not in aligned.columns:
+            aligned[col] = 0.0
+
+    aligned = aligned[expected]
+    return aligned
+
+
 def _predict_from_models(df: pd.DataFrame) -> tuple[Any, str | None]:
     models = _runtime["models"]
     if not models:
@@ -103,7 +153,8 @@ def _predict_from_models(df: pd.DataFrame) -> tuple[Any, str | None]:
 
     if selected_model is not None:
         if hasattr(selected_model, "predict"):
-            raw = selected_model.predict(df)[0]
+            aligned_df = _align_features_for_model(df, selected_model)
+            raw = selected_model.predict(aligned_df)[0]
         else:
             raise RuntimeError(f"Model '{selected_name}' does not implement predict().")
         return raw, selected_name
@@ -114,11 +165,12 @@ def _predict_from_models(df: pd.DataFrame) -> tuple[Any, str | None]:
     raw_preds = []
 
     for _, model in all_models:
+        aligned_df = _align_features_for_model(df, model)
         if hasattr(model, "predict_proba"):
-            probas.append(model.predict_proba(df))
+            probas.append(model.predict_proba(aligned_df))
             continue
 
-        pred_value = model.predict(df)[0]
+        pred_value = model.predict(aligned_df)[0]
         raw_preds.append(pred_value)
         if isinstance(pred_value, (int, float, np.number, np.integer, np.floating)):
             numeric_preds.append(float(pred_value))

@@ -5,13 +5,18 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 
 {% if fields %}
 class InputData(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
 {% for f in fields %}
-    {{ f.name }}: {{ f.python_type }}
+{% if f.python_name == f.name %}
+    {{ f.python_name }}: {{ f.python_type }}
+{% else %}
+    {{ f.python_name }}: {{ f.python_type }} = Field(alias="{{ f.name }}")
+{% endif %}
 {% endfor %}
 
 {% else %}

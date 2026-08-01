@@ -5,7 +5,9 @@ rendering Jinja2 templates into the output directory.
 
 from __future__ import annotations
 
+import json
 import re as _re
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
@@ -39,6 +41,7 @@ class BuildOptions:
     mlflow_tracking_uri: str = "http://localhost:5000"
     ci: Optional[str] = None                        # "github" | "gitlab" | None
     project: str = "mlplant-api"
+    ui: bool = False
     plugins: List[str] = field(default_factory=list)
     extra: dict = field(default_factory=dict)
 
@@ -54,6 +57,80 @@ def _jinja_env() -> Environment:
 def _write_file(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
+
+
+def _example_value(field_name: str, python_type: str):
+    lname = field_name.lower()
+
+    if python_type == "str":
+        if "city" in lname or "cidade" in lname:
+            return "sao_paulo"
+        if "state" in lname or "estado" in lname:
+            return "sp"
+        if "gender" in lname or "sexo" in lname:
+            return "male"
+        return "sample"
+
+    if python_type == "bool":
+        return False
+
+    if python_type == "int":
+        return 1
+
+    return 0.0
+
+
+def _build_request_example(fields) -> dict:
+    return {f.name: _example_value(f.name, f.python_type) for f in fields}
+
+
+def _find_logo_file(notebook_path: str) -> Optional[Path]:
+    notebook_dir = Path(notebook_path).resolve().parent
+    candidates = [
+        notebook_dir / "assets" / "mlplant.svg",
+        notebook_dir.parent / "assets" / "mlplant.svg",
+        Path(__file__).resolve().parent.parent / "assets" / "mlplant.svg",
+        Path.cwd() / "assets" / "mlplant.svg",
+    ]
+
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+
+    return None
+
+
+def _generate_react_ui(env: Environment, destination: Path, base_context: dict, notebook_path: str) -> None:
+    ui_context = {
+        **base_context,
+        "api_base": f"http://localhost:{base_context['port']}",
+    }
+
+    ui_files = {
+        "ui_package.json.j2": destination / "ui" / "package.json",
+        "ui_index.html.j2": destination / "ui" / "index.html",
+        "ui_vite.config.js.j2": destination / "ui" / "vite.config.js",
+        "ui_src_main.jsx.j2": destination / "ui" / "src" / "main.jsx",
+        "ui_src_app.jsx.j2": destination / "ui" / "src" / "App.jsx",
+        "ui_src_styles.css.j2": destination / "ui" / "src" / "styles.css",
+        "ui_readme.md.j2": destination / "ui" / "README.md",
+    }
+
+    for template_name, output_path in ui_files.items():
+        content = env.get_template(template_name).render(**ui_context)
+        _write_file(output_path, content)
+
+    logo_source = _find_logo_file(notebook_path)
+    logo_target = destination / "ui" / "public" / "mlplant.svg"
+    logo_target.parent.mkdir(parents=True, exist_ok=True)
+
+    if logo_source is not None:
+        shutil.copyfile(logo_source, logo_target)
+    else:
+        logo_target.write_text(
+            """<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 320 80\"><rect width=\"320\" height=\"80\" rx=\"16\" fill=\"#111827\"/><text x=\"24\" y=\"50\" fill=\"#f8fafc\" font-size=\"28\" font-family=\"Arial, sans-serif\">mlplant</text></svg>""",
+            encoding="utf-8",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -147,12 +224,12 @@ def _adapt_for_api(step: str, module_code: str, body_code: str):
         # Keep CatBoost side artifacts under output/artifacts instead of workspace root.
         body_code = _re.sub(
             r"\bCatBoostClassifier\s*\(",
-            "CatBoostClassifier(train_dir=os.path.join(os.getenv('MLPLANT_ARTIFACTS_DIR', 'artifacts'), 'catboost_info'), ",
+            "CatBoostClassifier(train_dir=_resolve_catboost_train_dir(), ",
             body_code,
         )
         body_code = _re.sub(
             r"\bCatBoostRegressor\s*\(",
-            "CatBoostRegressor(train_dir=os.path.join(os.getenv('MLPLANT_ARTIFACTS_DIR', 'artifacts'), 'catboost_info'), ",
+            "CatBoostRegressor(train_dir=_resolve_catboost_train_dir(), ",
             body_code,
         )
 
@@ -239,6 +316,13 @@ def build_project(options: BuildOptions) -> Path:
     schemas_content = env.get_template("schemas.py.j2").render(**base_context, fields=fields)
     _write_file(destination / "src" / "schemas.py", schemas_content)
 
+    # 3b. Generate a request payload blueprint for /predict.
+    request_example = _build_request_example(fields)
+    _write_file(
+        destination / "predict_request_example.json",
+        json.dumps(request_example, indent=2, ensure_ascii=False) + "\n",
+    )
+
     # 4. Generate requirements.txt
     req_content = env.get_template("requirements.txt.j2").render(**base_context)
     _write_file(destination / "requirements.txt", req_content)
@@ -259,6 +343,10 @@ def build_project(options: BuildOptions) -> Path:
     elif options.ci == "gitlab":
         ci_content = env.get_template("gitlab_ci.yaml.j2").render(**base_context)
         _write_file(destination / ".gitlab-ci.yml", ci_content)
+
+    # 7. React UI scaffold (optional)
+    if options.ui:
+        _generate_react_ui(env, destination, base_context, options.notebook)
 
     fire("post_build", destination=destination, options=options)
 
