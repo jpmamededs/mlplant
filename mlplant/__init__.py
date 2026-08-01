@@ -15,8 +15,32 @@ Usage in notebooks:
 """
 
 from mlplant.decorators import _MLPlantDecorators as _deco
+from pathlib import Path
+from importlib.metadata import PackageNotFoundError, version as pkg_version
+from typing import Optional
+import re
 
-__version__ = "0.1.0"
+
+def _read_version_from_pyproject() -> Optional[str]:
+    """Fallback for source-tree execution when package metadata is unavailable."""
+    pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
+    if not pyproject.exists():
+        return None
+
+    content = pyproject.read_text(encoding="utf-8", errors="ignore")
+    match = re.search(r'^version\s*=\s*["\']([^"\']+)["\']', content, re.MULTILINE)
+    return match.group(1) if match else None
+
+
+def _detect_version() -> str:
+    try:
+        return pkg_version("mlplant-cli")
+    except PackageNotFoundError:
+        fallback = _read_version_from_pyproject()
+        return fallback or "0.0.0"
+
+
+__version__ = _detect_version()
 
 # snake_case step markers (e.g. mlplant.config, @mlplant.train)
 config = _deco.config
