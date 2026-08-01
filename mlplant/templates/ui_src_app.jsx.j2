@@ -1,0 +1,536 @@
+import { useEffect, useMemo, useState } from "react";
+import {
+  FiBookOpen,
+  FiCode,
+  FiDatabase,
+  FiGitBranch,
+  FiInfo,
+  FiLayers,
+  FiList,
+  FiShield,
+  FiSliders,
+  FiTerminal,
+} from "react-icons/fi";
+
+const DEFAULT_API_BASE = import.meta.env.VITE_API_BASE_URL || "{{ api_base }}";
+const MLPLANT_LOGO_FALLBACK =
+  "data:image/svg+xml;utf8," +
+  encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 88"><rect width="360" height="88" rx="16" fill="#0a0a0a"/><text x="24" y="58" fill="#ffffff" font-family="Arial, sans-serif" font-size="52" font-weight="700">mlplant</text></svg>'
+  );
+
+const STACK_LOGOS = [
+  { name: "MLflow", src: "https://cdn.simpleicons.org/mlflow/ffffff" },
+  { name: "Docker", src: "https://cdn.simpleicons.org/docker/ffffff" },
+  { name: "FastAPI", src: "https://cdn.simpleicons.org/fastapi/ffffff" },
+  { name: "React", src: "https://cdn.simpleicons.org/react/ffffff" },
+  { name: "Vite", src: "https://cdn.simpleicons.org/vite/ffffff" },
+  { name: "Pydantic", src: "https://cdn.simpleicons.org/pydantic/ffffff" },
+];
+
+function toInputType(schemaType) {
+  if (schemaType === "integer" || schemaType === "number") return "number";
+  if (schemaType === "boolean") return "checkbox";
+  return "text";
+}
+
+function castByType(value, schemaType) {
+  if (schemaType === "integer") {
+    const parsed = Number.parseInt(value, 10);
+    return Number.isNaN(parsed) ? 0 : parsed;
+  }
+  if (schemaType === "number") {
+    const parsed = Number.parseFloat(value);
+    return Number.isNaN(parsed) ? 0 : parsed;
+  }
+  if (schemaType === "boolean") {
+    return Boolean(value);
+  }
+  return value;
+}
+
+export default function App() {
+  const [apiBase, setApiBase] = useState(DEFAULT_API_BASE);
+  const [schema, setSchema] = useState(null);
+  const [formData, setFormData] = useState({});
+  const [requiredFields, setRequiredFields] = useState([]);
+  const [loadingSchema, setLoadingSchema] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+  const [response, setResponse] = useState(null);
+  const [status, setStatus] = useState("unknown");
+  const [activeTab, setActiveTab] = useState("inference");
+  const [aboutTab, setAboutTab] = useState("overview");
+  const [inputMode, setInputMode] = useState("fields");
+  const [jsonPayload, setJsonPayload] = useState("{}\n");
+  const [logoSrc, setLogoSrc] = useState("/mlplant.svg");
+  const docsUrl = useMemo(() => `${apiBase.replace(/\/+$/, "")}/docs`, [apiBase]);
+
+  const entries = useMemo(() => {
+    if (!schema?.properties) return [];
+    return Object.entries(schema.properties);
+  }, [schema]);
+
+  useEffect(() => {
+    const checkHealth = async () => {
+      try {
+        const res = await fetch(`${apiBase}/health`);
+        const data = await res.json();
+        if (data?.status === "ok") {
+          setStatus("online");
+        } else {
+          setStatus("degraded");
+        }
+      } catch {
+        setStatus("offline");
+      }
+    };
+
+    checkHealth();
+  }, [apiBase]);
+
+  const loadSchema = async () => {
+    setError("");
+    setLoadingSchema(true);
+
+    try {
+      const res = await fetch(`${apiBase}/openapi.json`);
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status} while fetching OpenAPI.`);
+      }
+
+      const spec = await res.json();
+      const inputData = spec?.components?.schemas?.InputData;
+      if (!inputData?.properties) {
+        throw new Error("InputData schema not found in OpenAPI components.");
+      }
+
+      const fields = {};
+      for (const [name, definition] of Object.entries(inputData.properties)) {
+        if (definition?.type === "boolean") {
+          fields[name] = false;
+        } else {
+          fields[name] = "";
+        }
+      }
+
+      setSchema(inputData);
+      setRequiredFields(inputData.required || []);
+      setFormData(fields);
+      setJsonPayload(`${JSON.stringify(fields, null, 2)}\n`);
+      setResponse(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load schema.");
+    } finally {
+      setLoadingSchema(false);
+    }
+  };
+
+  useEffect(() => {
+    loadSchema();
+  }, []);
+
+  const updateField = (name, value, type) => {
+    if (type === "checkbox") {
+      setFormData((prev) => ({ ...prev, [name]: Boolean(value) }));
+      return;
+    }
+    setFormData((prev) => ({ ...prev, [name]: value }));
+  };
+
+  const onSubmit = async (event) => {
+    event.preventDefault();
+    setError("");
+    setSubmitting(true);
+
+    try {
+      let payload = {};
+
+      if (inputMode === "json") {
+        try {
+          const parsed = JSON.parse(jsonPayload || "{}");
+          if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+            throw new Error("JSON payload must be an object.");
+          }
+          payload = parsed;
+        } catch (parseErr) {
+          throw new Error(
+            parseErr instanceof Error ? `Invalid JSON: ${parseErr.message}` : "Invalid JSON payload."
+          );
+        }
+      } else {
+        for (const [name, definition] of entries) {
+          const rawValue = formData[name];
+          const schemaType = definition?.type || "string";
+
+          if (schemaType !== "boolean" && String(rawValue).trim() === "") {
+            if (requiredFields.includes(name)) {
+              throw new Error(`Field '${name}' is required.`);
+            }
+            continue;
+          }
+
+          payload[name] = castByType(rawValue, schemaType);
+        }
+      }
+
+      const res = await fetch(`${apiBase}/predict`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.detail || `Predict failed with HTTP ${res.status}.`);
+      }
+
+      setResponse(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Prediction failed.");
+      setResponse(null);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <main className="app-root">
+      <nav className="navbar">
+        <img
+          src={logoSrc}
+          alt="mlplant"
+          className="logo"
+          onError={() => setLogoSrc(MLPLANT_LOGO_FALLBACK)}
+        />
+        <section className="top-tabs nav-center" role="tablist" aria-label="Primary tabs">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === "inference"}
+            className={`tab-btn ${activeTab === "inference" ? "tab-btn-active" : ""}`}
+            onClick={() => setActiveTab("inference")}
+          >
+            <FiSliders aria-hidden="true" />
+            <span>Inference</span>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === "docs"}
+            className={`tab-btn ${activeTab === "docs" ? "tab-btn-active" : ""}`}
+            onClick={() => setActiveTab("docs")}
+          >
+            <FiBookOpen aria-hidden="true" />
+            <span>Docs</span>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === "about"}
+            className={`tab-btn ${activeTab === "about" ? "tab-btn-active" : ""}`}
+            onClick={() => setActiveTab("about")}
+          >
+            <FiInfo aria-hidden="true" />
+            <span>About</span>
+          </button>
+        </section>
+        <div className="nav-right">
+          <span className={`status status-${status}`}>API: {status}</span>
+        </div>
+      </nav>
+
+      <section className="content">
+        <h1>{{ title }}</h1>
+
+        <section className="config-row">
+          <label htmlFor="apiBase">API Base URL</label>
+          <input
+            id="apiBase"
+            value={apiBase}
+            onChange={(e) => setApiBase(e.target.value)}
+            placeholder="http://localhost:8000"
+          />
+          <button type="button" onClick={loadSchema} disabled={loadingSchema}>
+            {loadingSchema ? "Refreshing" : "Reload Schema"}
+          </button>
+        </section>
+
+        {activeTab === "inference" ? (
+          <>
+            <section className="input-mode-row">
+              <button
+                type="button"
+                className={`mode-btn ${inputMode === "fields" ? "mode-btn-active" : ""}`}
+                onClick={() => setInputMode("fields")}
+              >
+                <FiList aria-hidden="true" />
+                <span>Inputs</span>
+              </button>
+              <button
+                type="button"
+                className={`mode-btn ${inputMode === "json" ? "mode-btn-active" : ""}`}
+                onClick={() => setInputMode("json")}
+              >
+                <FiCode aria-hidden="true" />
+                <span>JSON</span>
+              </button>
+            </section>
+
+            <form onSubmit={onSubmit} className={inputMode === "json" ? "form-json" : "form-grid"}>
+              {inputMode === "fields" &&
+                entries.map(([name, definition]) => {
+            const schemaType = definition?.type || "string";
+            const inputType = toInputType(schemaType);
+            const isRequired = requiredFields.includes(name);
+
+            return (
+              <label key={name} className="field">
+                <div className="field-label-row">
+                  <span className="field-label">{name}</span>
+                  <span className="field-type">{schemaType}</span>
+                </div>
+
+                {inputType === "checkbox" ? (
+                  <input
+                    type="checkbox"
+                    checked={Boolean(formData[name])}
+                    onChange={(e) => updateField(name, e.target.checked, inputType)}
+                  />
+                ) : (
+                  <input
+                    type={inputType}
+                    value={formData[name] ?? ""}
+                    onChange={(e) => updateField(name, e.target.value, inputType)}
+                    placeholder={isRequired ? "required" : "optional"}
+                  />
+                )}
+              </label>
+            );
+          })}
+
+              {inputMode === "json" && (
+                <label className="json-field">
+                  <span className="field-label">JSON payload</span>
+                  <textarea
+                    value={jsonPayload}
+                    onChange={(e) => setJsonPayload(e.target.value)}
+                    placeholder='{"delta": 0.0, "g": 0.0}'
+                  />
+                </label>
+              )}
+
+              <div className="actions">
+                <button type="submit" disabled={submitting || entries.length === 0}>
+                  {submitting ? "Predicting..." : "Run Predict"}
+                </button>
+              </div>
+            </form>
+
+            {error ? <p className="error-box">{error}</p> : null}
+
+            <section className="result-panel">
+              <h2>Output</h2>
+              <pre>{response ? JSON.stringify(response, null, 2) : "No prediction yet."}</pre>
+            </section>
+          </>
+        ) : activeTab === "docs" ? (
+          <section className="docs-panel">
+            <div className="docs-head">
+              <p>Swagger UI</p>
+              <a href={docsUrl} target="_blank" rel="noreferrer">
+                Open in new tab
+              </a>
+            </div>
+            <iframe title="API Docs" src={docsUrl} />
+          </section>
+        ) : (
+          <section className="about-panel">
+            <h2>About mlplant</h2>
+            <p className="about-intro">
+              Navigate the sections below to quickly understand how mlplant works in practice.
+            </p>
+
+            <div className="about-tabs" role="tablist" aria-label="About sections">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={aboutTab === "overview"}
+                className={`about-tab-btn ${aboutTab === "overview" ? "about-tab-active" : ""}`}
+                onClick={() => setAboutTab("overview")}
+              >
+                <FiInfo aria-hidden="true" />
+                Overview
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={aboutTab === "workflow"}
+                className={`about-tab-btn ${aboutTab === "workflow" ? "about-tab-active" : ""}`}
+                onClick={() => setAboutTab("workflow")}
+              >
+                <FiGitBranch aria-hidden="true" />
+                Workflow
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={aboutTab === "steps"}
+                className={`about-tab-btn ${aboutTab === "steps" ? "about-tab-active" : ""}`}
+                onClick={() => setAboutTab("steps")}
+              >
+                <FiLayers aria-hidden="true" />
+                Pipeline Steps
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={aboutTab === "cli"}
+                className={`about-tab-btn ${aboutTab === "cli" ? "about-tab-active" : ""}`}
+                onClick={() => setAboutTab("cli")}
+              >
+                <FiTerminal aria-hidden="true" />
+                CLI
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={aboutTab === "tips"}
+                className={`about-tab-btn ${aboutTab === "tips" ? "about-tab-active" : ""}`}
+                onClick={() => setAboutTab("tips")}
+              >
+                <FiShield aria-hidden="true" />
+                Troubleshooting
+              </button>
+            </div>
+
+            {aboutTab === "overview" && (
+              <article className="about-card">
+                <div className="about-card-head">
+                  <FiInfo aria-hidden="true" />
+                  <h3>What is mlplant?</h3>
+                </div>
+                <p>
+                  mlplant is a framework focused on turning notebook experimentation into production
+                  inference systems with minimal friction. Instead of rewriting your full workflow by
+                  hand, you annotate your existing notebook cells and let mlplant extract, organize,
+                  and package that logic as a deployable API project.
+                </p>
+                <p>
+                  The generated project includes a FastAPI service, inferred request schema, training
+                  pipeline script, artifact contract, and optional integrations such as Docker, MLflow,
+                  and a React interface. This makes mlplant useful for teams that want a reproducible
+                  path from prototype to operational inference.
+                </p>
+              </article>
+            )}
+
+            {aboutTab === "workflow" && (
+              <article className="about-card">
+                <div className="about-card-head">
+                  <FiGitBranch aria-hidden="true" />
+                  <h3>End-to-End Workflow</h3>
+                </div>
+                <p>
+                  Start by tagging notebook cells with mlplant step annotations, then run the build
+                  command to generate a production-oriented codebase. After that, execute the training
+                  pipeline once to persist model artifacts and metadata. Finally, launch the API and
+                  serve predictions through Swagger, the React UI, or any external client.
+                </p>
+                <p>
+                  This flow keeps your notebook as the source of truth while still producing a clean
+                  runtime structure for deployment, monitoring, and long-term maintenance.
+                </p>
+              </article>
+            )}
+
+            {aboutTab === "steps" && (
+              <article className="about-card">
+                <div className="about-card-head">
+                  <FiLayers aria-hidden="true" />
+                  <h3>Pipeline Step Model</h3>
+                </div>
+                <p>
+                  mlplant organizes notebook logic into explicit pipeline stages: config, load_data,
+                  preprocessing, features, train, evaluate, artifacts, and predict. Each stage has a
+                  clear responsibility, which helps keep training and inference behavior aligned.
+                </p>
+                <p>
+                  During generation, these stages are consolidated into structured modules so your team
+                  can reason about data loading, feature transformations, model fitting, and runtime
+                  inference without manually splitting notebook code.
+                </p>
+                <div className="about-step-tags">
+                  <span>config</span>
+                  <span>load_data</span>
+                  <span>preprocessing</span>
+                  <span>features</span>
+                  <span>train</span>
+                  <span>evaluate</span>
+                  <span>artifacts</span>
+                  <span>predict</span>
+                </div>
+              </article>
+            )}
+
+            {aboutTab === "cli" && (
+              <article className="about-card">
+                <div className="about-card-head">
+                  <FiTerminal aria-hidden="true" />
+                  <h3>CLI Essentials</h3>
+                </div>
+                <p>
+                  The core CLI path is build, train, and serve. Build generates code, train persists
+                  artifacts, and serve exposes the runtime API.
+                </p>
+                <pre>
+{`mlplant build notebook.ipynb --output ./output --ui --docker --mlflow
+python output/train_pipeline.py
+python -m uvicorn output.main:app --host 0.0.0.0 --port 8000`}
+                </pre>
+                <p>
+                  You can optionally skip auto-training during build and run training separately when
+                  dataset paths or infrastructure requirements differ across environments.
+                </p>
+              </article>
+            )}
+
+            {aboutTab === "tips" && (
+              <article className="about-card">
+                <div className="about-card-head">
+                  <FiShield aria-hidden="true" />
+                  <h3>Troubleshooting & Reliability</h3>
+                </div>
+                <p>
+                  Most runtime issues come from schema drift or feature mismatches between training and
+                  inference. Keep transformations deterministic, preserve category naming conventions,
+                  and retrain artifacts whenever feature logic changes.
+                </p>
+                <p>
+                  If schema loading fails, confirm the API is online and reachable from the configured
+                  base URL. If predictions fail, validate your payload first in Swagger or JSON mode,
+                  then compare expected model columns against generated request fields.
+                </p>
+                <div className="about-stack-note">
+                  <FiDatabase aria-hidden="true" />
+                  <span>Tip: version notebooks, generated code, and artifacts together.</span>
+                </div>
+              </article>
+            )}
+          </section>
+        )}
+
+        <footer className="stack-footer">
+          <p>stack</p>
+          <div className="stack-logos">
+            {STACK_LOGOS.map((item) => (
+              <img key={item.name} src={item.src} alt={item.name} title={item.name} loading="lazy" />
+            ))}
+          </div>
+        </footer>
+      </section>
+    </main>
+  );
+}

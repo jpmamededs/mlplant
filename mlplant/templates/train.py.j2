@@ -62,6 +62,19 @@ def _to_list(values: Any) -> list:
     return list(values)
 
 
+def _resolve_catboost_train_dir() -> str:
+    """Resolve a writable directory for CatBoost training artifacts on all OSes."""
+    custom_dir = os.getenv("MLPLANT_CATBOOST_TRAIN_DIR", "").strip()
+    if custom_dir:
+        target = Path(custom_dir)
+    else:
+        temp_root = os.getenv("TEMP") or os.getenv("TMP") or "artifacts"
+        target = Path(temp_root) / "mlplant_catboost_info"
+
+    target.mkdir(parents=True, exist_ok=True)
+    return str(target)
+
+
 def _auto_select_model(models: Dict[str, Any], X_val: Any, y_val: Any) -> tuple[str | None, Dict[str, float]]:
     """Choose the best model on validation data and return per-model scores."""
     if X_val is None or y_val is None:
@@ -173,6 +186,7 @@ def train(X_train, y_train, X_val=None, y_val=None):
                 "title": "{{ title }}",
                 "mlflow_enabled": mlflow_enabled,
                 "mlflow_tracking_uri": mlflow.get_tracking_uri() if mlflow_enabled else None,
+                "feature_columns": list(X_train.columns) if hasattr(X_train, "columns") else None,
             },
         )
 
@@ -214,7 +228,11 @@ def train(X_train, y_train, X_val=None, y_val=None):
         label_encoder=globals().get("le"),
         selected_model=selected_model,
         metrics=metrics,
-        extra_metadata={"title": "{{ title }}", "mlflow_enabled": False},
+        extra_metadata={
+            "title": "{{ title }}",
+            "mlflow_enabled": False,
+            "feature_columns": list(X_train.columns) if hasattr(X_train, "columns") else None,
+        },
     )
 
     return {

@@ -97,6 +97,11 @@ def build(
         rich_help_panel="Integrations",
         metavar="PLATFORM",
     ),
+    ui: bool = typer.Option(
+        False, "--ui", is_flag=True,
+        help="Generate a modern [bold]React[/bold] frontend scaffold for /predict.",
+        rich_help_panel="Integrations",
+    ),
     train_after_build: bool = typer.Option(
         True,
         "--train/--no-train",
@@ -125,6 +130,8 @@ def build(
         mlflow = bool(yaml_cfg.get("mlflow", mlflow))
     if not ci:
         ci = yaml_cfg.get("ci", "") or ""
+    if not ui:
+        ui = bool(yaml_cfg.get("ui", ui))
 
     path = Path(notebook)
     if not path.exists():
@@ -163,6 +170,7 @@ def build(
         mlflow=mlflow,
         mlflow_tracking_uri=yaml_cfg.get("mlflow_tracking_uri", "http://localhost:5000"),
         ci=ci or None,
+        ui=ui,
         project=yaml_cfg.get("project", "mlplant-api"),
         plugins=yaml_cfg.get("plugins", []),
     )
@@ -185,6 +193,9 @@ def build(
         progress.remove_task(task)
 
     console.print(f"\n[bold green]✓ Project successfully generated at:[/bold green] {destination.resolve()}")
+    if ui:
+        console.print("[bold green]✓ React UI generated at:[/bold green] "
+                      f"{(Path(destination) / 'ui').resolve()}")
 
     if train_after_build:
         notebook_base_dir = Path(notebook).resolve().parent
