@@ -5,12 +5,14 @@ rendering Jinja2 templates into the output directory.
 
 from __future__ import annotations
 
+import ast
 import json
 import re as _re
 import shutil
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional, Set
 
 from jinja2 import Environment, PackageLoader, select_autoescape
 
@@ -28,6 +30,35 @@ STEP_TO_FILENAME = {
     "predict": "predict.py",
 }
 
+# Optional dependencies inferred from notebook imports/usages.
+_MODULE_REQUIREMENTS: Dict[str, str] = {
+    "xgboost": "xgboost>=2.0",
+    "catboost": "catboost>=1.2",
+    "lightgbm": "lightgbm>=4.3",
+    "imblearn": "imbalanced-learn>=0.12",
+    "imbalanced_learn": "imbalanced-learn>=0.12",
+    "category_encoders": "category-encoders>=2.6",
+    "feature_engine": "feature-engine>=1.8",
+    "optuna": "optuna>=3.6",
+    "shap": "shap>=0.45",
+    "scipy": "scipy>=1.11",
+    "statsmodels": "statsmodels>=0.14",
+    "tensorflow": "tensorflow>=2.16",
+    "torch": "torch>=2.2",
+    "polars": "polars>=1.0",
+    "pyarrow": "pyarrow>=16.0",
+}
+
+_SYMBOL_REQUIREMENTS: Dict[str, str] = {
+    "XGBClassifier": "xgboost>=2.0",
+    "XGBRegressor": "xgboost>=2.0",
+    "CatBoostClassifier": "catboost>=1.2",
+    "CatBoostRegressor": "catboost>=1.2",
+    "LGBMClassifier": "lightgbm>=4.3",
+    "LGBMRegressor": "lightgbm>=4.3",
+    "SMOTE": "imbalanced-learn>=0.12",
+}
+
 
 @dataclass
 class BuildOptions:
@@ -42,6 +73,8 @@ class BuildOptions:
     ci: Optional[str] = None                        # "github" | "gitlab" | None
     project: str = "mlplant-api"
     ui: bool = False
+    mode: str = "flex"  # "flex" | "strict"
+    emit_build_report: bool = True
     plugins: List[str] = field(default_factory=list)
     extra: dict = field(default_factory=dict)
 
@@ -245,6 +278,70 @@ def _adapt_for_api(step: str, module_code: str, body_code: str):
     return module_code, body_code
 
 
+def _detect_extra_requirements(parse_result) -> List[str]:
+    """Infer optional pip dependencies from notebook-imported code."""
+    requirements: Set[str] = set()
+    combined_code = "\n\n".join(parse_result.blocks.values())
+
+    try:
+        tree = ast.parse(combined_code) if combined_code.strip() else None
+    except SyntaxError:
+        tree = None
+
+    if tree is not None:
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    root = alias.name.split(".", 1)[0]
+                    req = _MODULE_REQUIREMENTS.get(root)
+                    if req:
+                        requirements.add(req)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                root = node.module.split(".", 1)[0]
+                req = _MODULE_REQUIREMENTS.get(root)
+                if req:
+                    requirements.add(req)
+
+    for symbol, req in _SYMBOL_REQUIREMENTS.items():
+        if symbol in combined_code:
+            requirements.add(req)
+
+    return sorted(requirements)
+
+
+def _has_absolute_path_reference(code: str) -> bool:
+    """Detect hardcoded absolute paths that reduce portability."""
+    windows_abs = _re.search(r"[A-Za-z]:[\\/][^\n'\"]+", code)
+    unix_abs = _re.search(r"(^|[\s(=])/[\w./-]+", code)
+    return bool(windows_abs or unix_abs)
+
+
+def _build_warnings(parse_result, extra_requirements: List[str]) -> List[str]:
+    warnings: List[str] = []
+
+    diagnostics = getattr(parse_result, "diagnostics", []) or []
+    warnings.extend(diagnostics)
+
+    if not parse_result.detected_steps:
+        warnings.append("No annotated mlplant steps were detected in the notebook.")
+
+    if "predict" not in parse_result.detected_steps:
+        warnings.append("No predict step was detected; generated API may not serve domain-specific predictions.")
+
+    combined_code = "\n\n".join(parse_result.blocks.values())
+    if combined_code and _has_absolute_path_reference(combined_code):
+        warnings.append("Absolute file paths were detected in notebook code; prefer relative paths for portability.")
+
+    return warnings
+
+
+def _write_build_report(destination: Path, report: dict) -> None:
+    _write_file(
+        destination / "mlplant_build_report.json",
+        json.dumps(report, indent=2, ensure_ascii=False) + "\n",
+    )
+
+
 def build_project(options: BuildOptions) -> Path:
     """
     Main entry point for project generation.
@@ -259,6 +356,13 @@ def build_project(options: BuildOptions) -> Path:
     parse_result = parse_notebook(options.notebook)
     destination = Path(options.output)
     env = _jinja_env()
+    extra_requirements = _detect_extra_requirements(parse_result)
+    warnings = _build_warnings(parse_result, extra_requirements)
+
+    if options.mode == "strict" and warnings:
+        raise ValueError(
+            "Strict mode blocked the build due to warnings: " + " | ".join(warnings)
+        )
 
     base_context = {
         "project": options.project,
@@ -269,6 +373,7 @@ def build_project(options: BuildOptions) -> Path:
         "mlflow_tracking_uri": options.mlflow_tracking_uri,
         "docker": options.docker,
         "detected_steps": parse_result.detected_steps,
+        "extra_requirements": extra_requirements,
     }
 
     fire("pre_build", options=options, parse_result=parse_result)
@@ -347,6 +452,26 @@ def build_project(options: BuildOptions) -> Path:
     # 7. React UI scaffold (optional)
     if options.ui:
         _generate_react_ui(env, destination, base_context, options.notebook)
+
+    build_report = {
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "mode": options.mode,
+        "notebook": str(Path(options.notebook).resolve()),
+        "output": str(destination.resolve()),
+        "detected_steps": parse_result.detected_steps,
+        "extra_requirements": extra_requirements,
+        "warnings": warnings,
+        "flags": {
+            "docker": options.docker,
+            "mlflow": options.mlflow,
+            "ui": options.ui,
+            "ci": options.ci,
+        },
+    }
+
+    options.extra["build_report"] = build_report
+    if options.emit_build_report:
+        _write_build_report(destination, build_report)
 
     fire("post_build", destination=destination, options=options)
 

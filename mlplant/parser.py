@@ -110,9 +110,19 @@ NOISE_PATTERNS = [
     re.compile(r"^\s*pd\.(?:Series|DataFrame)\s*\(.*\)\."),           # pd.Series(...).sort_values() etc.
 ]
 
+# Notebook runtime directives that are valid in Jupyter but invalid in plain Python.
+NOTEBOOK_RUNTIME_PATTERNS = [
+    re.compile(r"^\s*%{1,2}\w+"),
+    re.compile(r"^\s*!"),
+]
+
 
 def is_noise_line(line: str) -> bool:
     return any(p.match(line) for p in NOISE_PATTERNS)
+
+
+def is_notebook_runtime_line(line: str) -> bool:
+    return any(p.match(line) for p in NOTEBOOK_RUNTIME_PATTERNS)
 
 
 def clean_code(code: str) -> str:
@@ -135,17 +145,20 @@ def clean_code(code: str) -> str:
         for node in tree.body:
             if isinstance(node, _ast.Expr):
                 first = lines[node.lineno - 1] if node.lineno <= len(lines) else ""
-                if is_noise_line(first):
+                if is_noise_line(first) or is_notebook_runtime_line(first):
                     noise_linenos.update(range(node.lineno, node.end_lineno + 1))
 
         cleaned = [
             line for i, line in enumerate(lines, 1)
-            if i not in noise_linenos and not is_noise_line(line)
+            if i not in noise_linenos and not is_noise_line(line) and not is_notebook_runtime_line(line)
         ]
         return "".join(cleaned).strip()
 
     except SyntaxError:
-        cleaned = [line for line in code.splitlines() if not is_noise_line(line)]
+        cleaned = [
+            line for line in code.splitlines()
+            if not is_noise_line(line) and not is_notebook_runtime_line(line)
+        ]
         return "\n".join(cleaned).strip()
 
 
@@ -237,9 +250,10 @@ def extract_code(source: str, has_annotation: bool) -> str:
 class ParseResult:
     """Notebook analysis output: {step -> consolidated code}."""
 
-    def __init__(self, blocks: Dict[str, str], metadata: Dict):
+    def __init__(self, blocks: Dict[str, str], metadata: Dict, diagnostics: Optional[List[str]] = None):
         self.blocks = blocks
         self.metadata = metadata
+        self.diagnostics = diagnostics or []
         self.detected_steps: List[str] = [
             step for step in PIPELINE_ANNOTATIONS if step in blocks
         ]
@@ -262,6 +276,8 @@ def parse_notebook(notebook_path: str | Path) -> ParseResult:
     notebook = nbformat.read(str(path), as_version=4)
     step_blocks: Dict[str, List[str]] = defaultdict(list)
     current_step: Optional[str] = None  # sticky state
+    diagnostics: List[str] = []
+    stripped_runtime_cells = 0
 
     for cell in notebook.cells:
         if cell.cell_type != "code":
@@ -283,6 +299,8 @@ def parse_notebook(notebook_path: str | Path) -> ParseResult:
 
         active_step = current_step
         code = extract_code(source, has_annotation)
+        if any(is_notebook_runtime_line(line) for line in code.splitlines()):
+            stripped_runtime_cells += 1
         cleaned = clean_code(code)
         if cleaned:
             step_blocks[active_step].append(cleaned)
@@ -292,4 +310,13 @@ def parse_notebook(notebook_path: str | Path) -> ParseResult:
         for step, fragments in step_blocks.items()
     }
 
-    return ParseResult(blocks=consolidated_blocks, metadata=dict(notebook.metadata))
+    if stripped_runtime_cells:
+        diagnostics.append(
+            f"Notebook runtime directives (%/! lines) were removed from {stripped_runtime_cells} cell(s)."
+        )
+
+    return ParseResult(
+        blocks=consolidated_blocks,
+        metadata=dict(notebook.metadata),
+        diagnostics=diagnostics,
+    )

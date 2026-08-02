@@ -119,6 +119,46 @@ mlplant inspect my_notebook.ipynb
 python -m mlplant inspect my_notebook.ipynb
 ```
 
+### 4. Run notebook diagnostics (doctor)
+
+```bash
+mlplant doctor my_notebook.ipynb
+
+# machine-readable output
+mlplant doctor my_notebook.ipynb --json
+
+# fail CI when warnings/errors exist
+mlplant doctor my_notebook.ipynb --strict
+
+# export fix plan JSON
+mlplant doctor my_notebook.ipynb --export-fixes ./doctor_fixes.json
+
+# merge inferred optional deps into requirements
+mlplant doctor my_notebook.ipynb --write-requirements ./requirements.txt
+
+# combine strict CI with fix-plan export
+mlplant doctor my_notebook.ipynb --strict --export-fixes ./doctor_fixes.json
+
+# preview auto-fixes (dry-run by default)
+mlplant doctor my_notebook.ipynb --apply
+
+# persist auto-fixes (notebook + requirements merge when available)
+mlplant doctor my_notebook.ipynb --apply --no-dry-run
+```
+
+The doctor command checks common production risks before generation, including:
+
+- missing critical pipeline steps
+- notebook runtime directives (`%...`, `!...`) inside code cells
+- absolute paths that reduce portability
+- third-party imports that may need explicit dependency mapping
+
+Phase 3 doctor extras:
+
+- exports a machine-readable fix plan (`--export-fixes`)
+- can auto-merge inferred optional dependencies into a requirements file (`--write-requirements`)
+- supports safe auto-fixes with dry-run preview (`--apply`, `--dry-run/--no-dry-run`)
+
 ## Supported annotations
 
 | Annotation | PascalCase alias | Generated file | Purpose |
@@ -146,6 +186,10 @@ mlplant build <notebook> [OPTIONS]
   --ui            Generate React frontend scaffold for inference
   --train         Run generated train pipeline after build (default)
   --no-train      Skip training during build
+  --mode          Build safety mode: flex | strict (default: flex)
+  --smoke-test    Run lightweight syntax/import smoke test on generated project
+  --build-report  Generate mlplant_build_report.json (default)
+  --no-build-report  Skip build report generation
 ```
 
 ## Output layout after build
@@ -157,6 +201,7 @@ Generated code is placed in the output folder (`./output` by default):
 - `output/train_pipeline.py`
 - `output/requirements.txt`
 - `output/predict_request_example.json` (payload blueprint for `/predict`)
+- `output/mlplant_build_report.json` (diagnostics, warnings and inferred decisions)
 - `output/Dockerfile` (when `--docker` is enabled)
 - `output/ui/*` (when `--ui` is enabled)
 
