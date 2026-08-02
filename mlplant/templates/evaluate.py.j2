@@ -13,9 +13,23 @@ def evaluate(model, X_test, y_test) -> Dict[str, Any]:
     """Evaluate the model and return a dictionary of metrics."""
 {% if body_code %}
 {{ body_code | indent(4, first=true) }}
-    return metrics
+    if "metrics" in locals() and isinstance(locals()["metrics"], dict):
+        return locals()["metrics"]
+
+    inferred_metrics = {}
+    for key, value in locals().items():
+        if key in {"model", "X_test", "y_test", "y_pred", "inferred_metrics"}:
+            continue
+        if isinstance(value, (int, float)):
+            inferred_metrics[key] = float(value)
+        elif hasattr(value, "item"):
+            try:
+                inferred_metrics[key] = float(value.item())
+            except Exception:
+                continue
+
+    return inferred_metrics
 {% else %}
-    y_pred = model.predict(X_test)
-    score = balanced_accuracy_score(y_test, y_pred)
-    return {"balanced_accuracy": float(score)}
+    # No default metrics: only notebook-defined evaluation logic should produce metrics.
+    return {}
 {% endif %}

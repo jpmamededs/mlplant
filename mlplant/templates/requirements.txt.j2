@@ -12,3 +12,10 @@ numpy>=1.26
 # Experiment tracking
 mlflow>=2.12
 {% endif %}
+{% if extra_requirements %}
+
+# Notebook-specific optional dependencies (auto-detected)
+{% for dep in extra_requirements %}
+{{ dep }}
+{% endfor %}
+{% endif %}
